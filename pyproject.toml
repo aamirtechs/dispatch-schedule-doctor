@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dispatch-schedule-doctor"
+version = "1.0.0"
+description = "Audit a dispatch schedule CSV export for double-booked drivers and trucks, missed pickup windows, and missing travel gaps"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+
+[project.scripts]
+dispatch-schedule-doctor = "dispatch_schedule_doctor:main_entry"
+
+[tool.setuptools]
+py-modules = ["dispatch_schedule_doctor"]

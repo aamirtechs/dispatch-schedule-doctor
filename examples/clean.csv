@@ -1,0 +1,5 @@
+load_id,driver,truck,broker,pickup_at,delivery_at,origin,destination,rate,status,home_time_start,home_time_end,reset_until
+C-201,Alice Reed,T-101,Acme Logistics,2026-11-18 08:00,2026-11-18 18:00,Dallas TX,Houston TX,1200.00,booked,,,
+C-202,Bob Chen,T-102,Beta Freight,2026-11-18 09:00,2026-11-18 19:00,Atlanta GA,Charlotte NC,1100.00,booked,,,
+C-203,Carla Diaz,T-103,Delta Carriers,2026-11-19 08:00,2026-11-19 16:00,Nashville TN,Memphis TN,900.00,dispatched,,,
+C-204,Dan Okafor,T-104,Echo Freight,2026-11-19 08:00,2026-11-19 15:00,Phoenix AZ,Tucson AZ,800.00,booked,,,

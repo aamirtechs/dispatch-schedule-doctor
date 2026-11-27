@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dispatch Schedule Doctor - AamirTechs</title>
+<style>
+:root{--navy:#0b1f3a;--gold:#d4a72c;--bg:#f6f8fb;--ink:#1c2733;--muted:#5b6b7c;--line:#d9e1ea}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--navy);color:#fff;padding:28px 20px;border-bottom:4px solid var(--gold)}
+header .wrap{max-width:880px;margin:0 auto}
+header h1{margin:0 0 6px;font-size:1.6rem}
+header p{margin:0;color:#c8d4e4}
+main{max-width:880px;margin:24px auto;padding:0 20px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(11,31,58,.08)}
+label{display:block;font-weight:600;margin:14px 0 6px}
+.card>label:first-child{margin-top:0}
+textarea{width:100%;min-height:180px;padding:10px;border:1px solid var(--line);border-radius:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem}
+input[type=text],input[type=number],select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:.95rem;width:100%}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:4px}
+.grid label{margin:0 0 6px}
+.row{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+button{background:var(--navy);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:.95rem;cursor:pointer}
+button.alt{background:#fff;color:var(--navy);border:1px solid var(--navy)}
+button.gold{background:var(--gold);color:#0b1f3a;font-weight:600}
+pre{background:#0b1f3a;color:#eef3f9;border-radius:8px;padding:16px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;min-height:60px;font-size:.85rem}
+footer{max-width:880px;margin:0 auto 32px;padding:0 20px;color:var(--muted);font-size:.9rem}
+footer a{color:var(--navy)}
+.hint{color:var(--muted);font-size:.85rem;margin-top:6px;font-weight:400}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>Dispatch Schedule Doctor</h1><p>Audit a dispatch schedule CSV export for double-booked drivers and trucks, missed pickup windows, and missing travel gaps.</p></div></header>
+<main><div class="card">
+<label for="file">Input CSV file</label>
+<input type="file" id="file" accept=".csv,text/csv">
+<label for="input">Or paste the CSV</label>
+<textarea id="input" spellcheck="false" placeholder="Paste a dispatch schedule CSV export here, or load the sample."></textarea>
+<label>Options</label>
+<div class="grid">
+<div><label for="opt-gap">Min gap hours <span class="hint">(--min-gap-hours)</span></label><input type="number" id="opt-gap" step="any" value="2"></div>
+<div><label for="opt-grace">Past grace hours <span class="hint">(--past-grace-hours)</span></label><input type="number" id="opt-grace" step="any" value="0"></div>
+<div><label for="opt-asof">As of date <span class="hint">(--as-of)</span></label><input type="text" id="opt-asof" value="2026-11-18"></div>
+</div>
+<div class="row"><button class="gold" id="run" type="button">Run check</button><button class="alt" id="sample" type="button">Load sample</button><button class="alt" id="sample-clean" type="button">Load clean sample</button><button class="alt" id="sample-warnings" type="button">Load warnings-only sample</button><button class="alt" id="download" type="button">Download report</button></div>
+<label for="out">Report</label>
+<pre id="out">Your report will appear here.</pre>
+</div></main>
+<footer>
+<p>Built by AamirTechs. <a href="https://aamirtechs.github.io/">All tools</a> | <a href="https://github.com/aamirtechs/dispatch-schedule-doctor">Source</a></p>
+<p>Privacy: this tool runs 100% in your browser, nothing is uploaded.</p>
+</footer>
+<script id="core">
+// Pure logic port of dispatch_schedule_doctor.py. No DOM access in this block.
+function pyRepr(v) {
+  if (v === null || v === undefined) return "None";
+  if (typeof v === "string") {
+    var hasSingle = v.indexOf("'") >= 0, hasDouble = v.indexOf('"') >= 0;
+    var quote = (hasSingle && !hasDouble) ? '"' : "'";
+    var out = "";
+    for (var i = 0; i < v.length; i++) {
+      var ch = v[i], code = v.charCodeAt(i);
+      if (ch === "\\") out += "\\\\";
+      else if (ch === quote) out += "\\" + quote;
+      else if (ch === "\n") out += "\\n";
+      else if (ch === "\r") out += "\\r";
+      else if (ch === "\t") out += "\\t";
+      else if (code < 32 || code === 127) out += "\\x" + ("0" + code.toString(16)).slice(-2);
+      else out += ch;
+    }
+    return quote + out + quote;
+  }
+  return String(v);
+}
+function parseCsvRows(text) {
+  text = String(text == null ? "" : text).replace(/^\uFEFF/, "");
+  var rows = [], row = [], field = "", inQuotes = false, atFieldStart = true, i, ch;
+  for (i = 0; i < text.length; i++) {
+    ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"' && atFieldStart) { inQuotes = true; atFieldStart = false; }
+    else if (ch === ",") { row.push(field); field = ""; atFieldStart = true; }
+    else if (ch === "\r") { if (text[i + 1] !== "\n") { row.push(field); field = ""; rows.push(row); row = []; atFieldStart = true; } }
+    else if (ch === "\n") { row.push(field); field = ""; rows.push(row); row = []; atFieldStart = true; }
+    else { field += ch; atFieldStart = false; }
+  }
+  if (field !== "" || row.length || inQuotes) { row.push(field); rows.push(row); }
+  return rows;
+}
+function daysInMonth(y, mo) {
+  return [31, (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+}
+function makeTs(y, mo, d, hh, mi, ss, micro, offsetMin) {
+  if (mo < 1 || mo > 12 || d < 1 || d > daysInMonth(y, mo)) return null;
+  if (hh > 23 || mi > 59 || ss > 59) return null;
+  if (offsetMin === null || offsetMin === undefined) offsetMin = 0;
+  if (offsetMin < -1439 || offsetMin > 1439) return null;
+  var wallMs = Date.UTC(y, mo - 1, d, hh, mi, ss) + micro / 1000;
+  return { ms: wallMs - offsetMin * 60000, wallMs: wallMs };
+}
+function parseTimestamp(text) {
+  if (text === null || text === undefined) return null;
+  text = String(text).trim();
+  if (!text) return null;
+  var candidate = text;
+  var m;
+  var isoText = candidate;
+  if (/[Zz]$/.test(isoText)) isoText = isoText.slice(0, -1) + "+00:00";
+  m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([+-]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?)?$/.exec(isoText);
+  if (m && (m[4] !== undefined || m[8] === undefined)) {
+    var micro = 0;
+    if (m[7]) micro = parseInt((m[7] + "000000").slice(0, 6), 10);
+    var off = 0;
+    if (m[8]) {
+      var om = /^([+-])(\d{2}):(\d{2})/.exec(m[8]);
+      off = (parseInt(om[2], 10) * 60 + parseInt(om[3], 10)) * (om[1] === "-" ? -1 : 1);
+    }
+    var ts = makeTs(+m[1], +m[2], +m[3], m[4] ? +m[4] : 0, m[5] ? +m[5] : 0, m[6] ? +m[6] : 0, micro, off);
+    if (ts) return ts;
+  }
+  var fmts = [
+    [/^(\d{4})-(\d{1,2})-(\d{1,2})T(\d{1,2}):(\d{1,2}):(\d{1,2})$/, "ymd"],
+    [/^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{1,2}):(\d{1,2})$/, "ymd"],
+    [/^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{1,2})$/, "ymd"],
+    [/^(\d{4})-(\d{1,2})-(\d{1,2})$/, "ymd"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{1,2})$/, "dmy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{1,2})$/, "mdy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, "dmy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, "mdy"]
+  ];
+  for (var i = 0; i < fmts.length; i++) {
+    m = fmts[i][0].exec(candidate);
+    if (!m) continue;
+    var y, mo, d;
+    if (fmts[i][1] === "ymd") { y = +m[1]; mo = +m[2]; d = +m[3]; }
+    else if (fmts[i][1] === "dmy") { d = +m[1]; mo = +m[2]; y = +m[3]; }
+    else { mo = +m[1]; d = +m[2]; y = +m[3]; }
+    var hh = m[4] !== undefined ? +m[4] : 0;
+    var mi = m[5] !== undefined ? +m[5] : 0;
+    var ss = m[6] !== undefined ? +m[6] : 0;
+    var t2 = makeTs(y, mo, d, hh, mi, ss, 0, 0);
+    if (t2) return t2;
+  }
+  return null;
+}
+function fmtDate(ts) {
+  var dt = new Date(ts.wallMs);
+  function p(n, w) { var s = String(n); while (s.length < w) s = "0" + s; return s; }
+  return p(dt.getUTCFullYear(), 4) + "-" + p(dt.getUTCMonth() + 1, 2) + "-" + p(dt.getUTCDate(), 2);
+}
+function fmtDateTime(ts) {
+  var dt = new Date(ts.wallMs);
+  function p(n, w) { var s = String(n); while (s.length < w) s = "0" + s; return s; }
+  return fmtDate(ts) + " " + p(dt.getUTCHours(), 2) + ":" + p(dt.getUTCMinutes(), 2);
+}
+// Decimals are {c: BigInt coefficient, e: exponent} with value c * 10^e,
+// mirroring Python Decimal behaviour for the operations used here.
+function Dec(v) {
+  if (v && typeof v === "object" && typeof v.c === "bigint") return v;
+  var s = String(v).trim();
+  s = s.replace(/(\d)_(?=\d)/g, "$1");
+  var m = /^([+-]?)(?:(\d+)(?:\.(\d*))?|\.(\d+))(?:[eE]([+-]?\d+))?$/.exec(s);
+  if (!m) throw new Error("not a number: " + s);
+  var intPart = m[2] || "";
+  var fracPart = (m[3] !== undefined ? m[3] : (m[4] || ""));
+  var exp = (m[5] ? parseInt(m[5], 10) : 0) - fracPart.length;
+  var digits = (intPart + fracPart).replace(/^0+/, "");
+  if (digits === "") return { c: 0n, e: exp };
+  var c = BigInt(digits);
+  if (m[1] === "-") c = -c;
+  return { c: c, e: exp };
+}
+function decStr(d) {
+  if (d.c === 0n) {
+    if (d.e >= 0) return "0" + "0".repeat(d.e);
+    var z = "0.";
+    for (var i = 0; i < -d.e - 1; i++) z += "0";
+    return z + "0";
+  }
+  var neg = d.c < 0n;
+  var digits = (neg ? -d.c : d.c).toString();
+  var out;
+  if (d.e >= 0) out = digits + "0".repeat(d.e);
+  else {
+    var pos = digits.length + d.e;
+    if (pos > 0) out = digits.slice(0, pos) + "." + digits.slice(pos);
+    else out = "0." + "0".repeat(-pos) + digits;
+  }
+  return (neg ? "-" : "") + out;
+}
+function decAdd(a, b) {
+  var e = Math.min(a.e, b.e);
+  var ca = a.c * (10n ** BigInt(a.e - e));
+  var cb = b.c * (10n ** BigInt(b.e - e));
+  return { c: ca + cb, e: e };
+}
+function decSub(a, b) { return decAdd(a, { c: -b.c, e: b.e }); }
+function decCmp(a, b) {
+  var d = decSub(a, b);
+  return d.c < 0n ? -1 : (d.c > 0n ? 1 : 0);
+}
+function decQuantize2(a, halfUp) {
+  if (a.e === -2) return { c: a.c, e: -2 };
+  if (a.e > -2) return { c: a.c * (10n ** BigInt(a.e + 2)), e: -2 };
+  var div = 10n ** BigInt(-2 - a.e);
+  var neg = a.c < 0n;
+  var abs = neg ? -a.c : a.c;
+  var q = abs / div;
+  var r = abs % div;
+  if (halfUp) { if (r * 2n >= div) q += 1n; }
+  else if (r * 2n > div || (r * 2n === div && (q & 1n) === 1n)) q += 1n;
+  return { c: neg ? -q : q, e: -2 };
+}
+function moneyStr(amount) {
+  var s = decStr(decQuantize2(amount, false));
+  var neg = s.charAt(0) === "-";
+  if (neg) s = s.slice(1);
+  var parts = s.split(".");
+  var intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return "$" + (neg ? "-" : "") + intPart + "." + parts[1];
+}
+function fmtHours(hours) {
+  var c = hours.c, e = hours.e;
+  if (c === 0n) return "0";
+  while (c % 10n === 0n) { c = c / 10n; e += 1; }
+  return decStr({ c: c, e: e });
+}
+function parseMoney(text) {
+  if (text === null || text === undefined) return [null, true];
+  var t = String(text).trim().split("$").join("").split(",").join("");
+  if (!t) return [null, true];
+  var amount;
+  try { amount = Dec(t); } catch (e) { return [null, false]; }
+  if (decCmp(amount, Dec(0)) < 0) return [null, false];
+  return [amount, true];
+}
+function F(load, rule, severity, message) { return { load: load, rule: rule, severity: severity, message: message }; }
+function findingStr(f) { return f.severity.toUpperCase() + " [" + f.rule + "] " + f.load + ": " + f.message; }
+function findColumn(headerSet, names) {
+  for (var i = 0; i < names.length; i++) if (headerSet[names[i]] !== undefined) return names[i];
+  return null;
+}
+function padRight(s, w) { s = String(s); while (s.length < w) s += " "; return s; }
+function padLeft(s, w) { s = String(s); while (s.length < w) s = " " + s; return s; }
+function windowsOverlap(aStart, aEnd, bStart, bEnd) {
+  return aStart.ms < bEnd.ms && bStart.ms < aEnd.ms;
+}
+var KNOWN_STATUSES = ["booked", "dispatched", "delivered", "cancelled", "pending", "assigned"];
+window.runTool = function (inputText, options) {
+  options = options || {};
+  var minGap, pastGrace;
+  try { minGap = Dec(options.minGapHours === undefined || options.minGapHours === "" ? "2" : String(options.minGapHours)); }
+  catch (e) { return "error: --min-gap-hours is not a valid number\n"; }
+  try { pastGrace = Dec(options.pastGraceHours === undefined || options.pastGraceHours === "" ? "0" : String(options.pastGraceHours)); }
+  catch (e) { return "error: --past-grace-hours is not a valid number\n"; }
+  if (decCmp(minGap, Dec(0)) < 0) return "error: --min-gap-hours must be at least 0\n";
+  if (decCmp(pastGrace, Dec(0)) < 0) return "error: --past-grace-hours must be at least 0\n";
+  var asOfText = options.asOf === undefined || options.asOf === "" ? "2026-11-18" : String(options.asOf);
+  var asOf = parseTimestamp(asOfText);
+  if (asOf === null) return "error: --as-of " + pyRepr(asOfText) + " is not a readable date\n";
+  var graceMs = Number(decStr(pastGrace)) * 3600000;
+  var rows = parseCsvRows(inputText || "");
+  if (!rows.length) return "error: input is empty, no header row found\n";
+  var header = rows[0].map(function (n) { return String(n).trim(); });
+  var headerSet = {};
+  header.forEach(function (n, i) { headerSet[n] = i; });
+  var idColumn = findColumn(headerSet, ["load_id", "load", "id"]);
+  if (idColumn === null) return "error: input has no load_id column (header is: " + header.join(", ") + ")\n";
+  var driverColumn = findColumn(headerSet, ["driver", "driver_name"]);
+  var truckColumn = findColumn(headerSet, ["truck", "truck_id", "unit", "unit_id"]);
+  var brokerColumn = findColumn(headerSet, ["broker", "broker_name"]);
+  var pickupColumn = findColumn(headerSet, ["pickup_at", "pickup", "pickup_time", "pickup_window_start"]);
+  var deliveryColumn = findColumn(headerSet, ["delivery_at", "delivery", "delivery_time", "delivery_window_end"]);
+  var originColumn = findColumn(headerSet, ["origin", "pickup_city", "from"]);
+  var destinationColumn = findColumn(headerSet, ["destination", "delivery_city", "to"]);
+  var rateColumn = findColumn(headerSet, ["rate", "load_rate", "rate_amount"]);
+  var statusColumn = findColumn(headerSet, ["status", "load_status"]);
+  var homeStartColumn = findColumn(headerSet, ["home_time_start", "home_start", "home_from"]);
+  var homeEndColumn = findColumn(headerSet, ["home_time_end", "home_end", "home_to"]);
+  var resetColumn = findColumn(headerSet, ["reset_until", "reset_end", "reset_available"]);
+  function cell(cells, col) { return col === null ? "" : (cells[col] !== undefined ? cells[col] : ""); }
+  var findings = [], loads = [];
+  var seenIds = {};
+  for (var r = 1; r < rows.length; r++) {
+    var row = rows[r];
+    var lineNumber = r + 1;
+    if (!row.length || row.every(function (c) { return !String(c).trim(); })) continue;
+    if (row.length !== header.length) {
+      findings.push(F("row " + lineNumber, "malformed-row", "error",
+        "row has " + row.length + " fields but the header has " + header.length + ", so the row was skipped"));
+      continue;
+    }
+    var cells = {};
+    header.forEach(function (n, i) { cells[n] = String(row[i]).trim(); });
+    var loadId = cells[idColumn] || ("row " + lineNumber);
+    if (seenIds[loadId]) {
+      findings.push(F(loadId, "duplicate-load", "error",
+        "load id appears more than once in the export, so the same load is scheduled twice"));
+    } else seenIds[loadId] = true;
+    var load = {
+      id: loadId, driver: cell(cells, driverColumn), truck: cell(cells, truckColumn),
+      broker: cell(cells, brokerColumn), pickupAt: null, deliveryAt: null,
+      origin: cell(cells, originColumn), destination: cell(cells, destinationColumn),
+      rate: null, rateInvalid: false,
+      status: statusColumn !== null && cells[statusColumn] ? cells[statusColumn].toLowerCase() : "",
+      homeTimeStart: null, homeTimeEnd: null, resetUntil: null
+    };
+    var timeCols = [
+      [pickupColumn, "pickupAt", "pickup_at"],
+      [deliveryColumn, "deliveryAt", "delivery_at"],
+      [homeStartColumn, "homeTimeStart", "home_time_start"],
+      [homeEndColumn, "homeTimeEnd", "home_time_end"],
+      [resetColumn, "resetUntil", "reset_until"]
+    ];
+    timeCols.forEach(function (tc) {
+      if (tc[0] === null) return;
+      var raw = cells[tc[0]];
+      if (!raw) return;
+      var parsed = parseTimestamp(raw);
+      if (parsed === null) {
+        findings.push(F(loadId, "invalid-timestamp", "error", tc[2] + " " + pyRepr(raw) + " is not a readable date"));
+      } else load[tc[1]] = parsed;
+    });
+    if (pickupColumn !== null && !cells[pickupColumn]) {
+      findings.push(F(loadId, "missing-times", "error", "pickup_at is empty, so the load cannot be placed on the schedule"));
+    }
+    if (deliveryColumn !== null && !cells[deliveryColumn]) {
+      findings.push(F(loadId, "missing-times", "error", "delivery_at is empty, so the load cannot be placed on the schedule"));
+    }
+    if (rateColumn !== null) {
+      var rt = parseMoney(cells[rateColumn]);
+      if (!rt[1]) {
+        load.rateInvalid = true;
+        findings.push(F(loadId, "invalid-rate", "error",
+          "rate " + pyRepr(cells[rateColumn]) + " is not a valid non-negative amount, so it was left out of the rate totals"));
+      } else load.rate = rt[0];
+    }
+    loads.push(load);
+  }
+  var active = loads.filter(function (l) { return l.status !== "cancelled" && l.status !== "delivered"; });
+  loads.forEach(function (load) {
+    var loadId = load.id;
+    var pickup = load.pickupAt, delivery = load.deliveryAt, status = load.status;
+    if (!load.broker) {
+      findings.push(F(loadId, "missing-broker", "warning", "load has no broker name, so it cannot be counted in the per-broker summary"));
+    }
+    if (!load.truck) {
+      findings.push(F(loadId, "missing-truck", "warning", "load has no truck assigned, so the equipment for the run is unknown"));
+    }
+    if (status && KNOWN_STATUSES.indexOf(status) < 0) {
+      findings.push(F(loadId, "unknown-status", "warning",
+        "status " + pyRepr(status) + " is not a known status (booked, dispatched, delivered, cancelled, pending, assigned), so the load was treated as active"));
+    }
+    if (load.rate === null && !load.rateInvalid) {
+      findings.push(F(loadId, "missing-rate", "warning", "load has no rate recorded, so it was left out of the rate totals"));
+    }
+    if (status === "cancelled") return;
+    if (!load.driver) {
+      findings.push(F(loadId, "unassigned-load", "error", "load has no driver assigned, so nobody is booked to run it"));
+    }
+    if (pickup !== null && delivery !== null && delivery.ms < pickup.ms) {
+      findings.push(F(loadId, "delivery-before-pickup", "error",
+        "delivery_at " + fmtDateTime(delivery) + " is before pickup_at " + fmtDateTime(pickup)));
+    }
+    if (pickup !== null && status !== "delivered" && pickup.ms < asOf.ms - graceMs) {
+      findings.push(F(loadId, "past-pickup", "error",
+        "pickup_at " + fmtDateTime(pickup) + " is already past the as-of date " + fmtDateTime(asOf) + ", so the load should have rolled or been rescheduled"));
+    }
+    var homeStart = load.homeTimeStart, homeEnd = load.homeTimeEnd;
+    if (pickup !== null && delivery !== null && homeStart !== null && homeEnd !== null) {
+      if (windowsOverlap(pickup, delivery, homeStart, homeEnd)) {
+        findings.push(F(loadId, "home-time-conflict", "error",
+          "load window " + fmtDateTime(pickup) + " to " + fmtDateTime(delivery) + " overlaps the driver's home time " + fmtDateTime(homeStart) + " to " + fmtDateTime(homeEnd)));
+      }
+    }
+    var resetUntil = load.resetUntil;
+    if (pickup !== null && resetUntil !== null && pickup.ms < resetUntil.ms) {
+      findings.push(F(loadId, "reset-conflict", "error",
+        "pickup_at " + fmtDateTime(pickup) + " is before the driver's reset ends at " + fmtDateTime(resetUntil)));
+    }
+  });
+  // Double-booked drivers and trucks.
+  [["driver", "driver"], ["truck", "truck"]].forEach(function (kl) {
+    var key = kl[0], label = kl[1];
+    var byValue = {};
+    active.forEach(function (load) {
+      var value = load[key];
+      if (!value) return;
+      (byValue[value] = byValue[value] || []).push(load);
+    });
+    Object.keys(byValue).forEach(function (value) {
+      var placed = byValue[value].filter(function (l) { return l.pickupAt !== null && l.deliveryAt !== null; });
+      placed.sort(function (a, b) { return a.pickupAt.ms - b.pickupAt.ms || (a.id < b.id ? -1 : (a.id > b.id ? 1 : 0)); });
+      for (var i = 0; i < placed.length; i++) {
+        for (var j = 0; j < i; j++) {
+          var earlier = placed[j], load = placed[i];
+          if (windowsOverlap(earlier.pickupAt, earlier.deliveryAt, load.pickupAt, load.deliveryAt)) {
+            findings.push(F(load.id, "double-booked-" + label, "error",
+              label + " " + value + " is already booked on load " + earlier.id +
+              " from " + fmtDateTime(earlier.pickupAt) + " to " + fmtDateTime(earlier.deliveryAt) +
+              ", which overlaps this load from " + fmtDateTime(load.pickupAt) + " to " + fmtDateTime(load.deliveryAt)));
+            break;
+          }
+        }
+      }
+    });
+  });
+  // Travel gaps, per driver.
+  var byDriver = {};
+  active.forEach(function (load) {
+    if (!load.driver) return;
+    (byDriver[load.driver] = byDriver[load.driver] || []).push(load);
+  });
+  Object.keys(byDriver).forEach(function (driver) {
+    var placed = byDriver[driver].filter(function (l) { return l.pickupAt !== null && l.deliveryAt !== null; });
+    placed.sort(function (a, b) { return a.pickupAt.ms - b.pickupAt.ms || (a.id < b.id ? -1 : (a.id > b.id ? 1 : 0)); });
+    for (var i = 1; i < placed.length; i++) {
+      var previous = placed[i - 1], load = placed[i];
+      var gapMs = load.pickupAt.ms - previous.deliveryAt.ms;
+      if (gapMs < 0) continue;
+      var gapHours = Dec(String(gapMs / 3600000));
+      if (decCmp(gapHours, minGap) < 0) {
+        findings.push(F(load.id, "no-travel-gap", "error",
+          "driver " + driver + " has only " + fmtHours(gapHours) + " hours between delivery of load " + previous.id +
+          " at " + fmtDateTime(previous.deliveryAt) + " and pickup of this load at " + fmtDateTime(load.pickupAt) +
+          ", below the minimum gap of " + fmtHours(minGap) + " hours"));
+      }
+    }
+  });
+  var errors = findings.filter(function (f) { return f.severity === "error"; }).length;
+  var warnings = findings.length - errors;
+  var totalRate = Dec(0);
+  loads.forEach(function (l) { if (l.rate !== null) totalRate = decAdd(totalRate, l.rate); });
+  var doubleBooked = findings.filter(function (f) { return f.rule.indexOf("double-booked") === 0; }).length;
+  var unassigned = findings.filter(function (f) { return f.rule === "unassigned-load"; }).length;
+  var pastPickups = findings.filter(function (f) { return f.rule === "past-pickup"; }).length;
+  var perDriver = {};
+  loads.forEach(function (l) {
+    var driver = l.driver || "(unassigned)";
+    var rowD = perDriver[driver] || (perDriver[driver] = { driver: driver, loads: 0, firstPickup: null, lastDelivery: null, totalRate: Dec(0) });
+    rowD.loads += 1;
+    if (l.pickupAt !== null && (rowD.firstPickup === null || l.pickupAt.ms < rowD.firstPickup.ms)) rowD.firstPickup = l.pickupAt;
+    if (l.deliveryAt !== null && (rowD.lastDelivery === null || l.deliveryAt.ms > rowD.lastDelivery.ms)) rowD.lastDelivery = l.deliveryAt;
+    if (l.rate !== null) rowD.totalRate = decAdd(rowD.totalRate, l.rate);
+  });
+  var lines = findings.map(findingStr);
+  lines.push("");
+  lines.push("Loads: " + loads.length + ", findings: " + findings.length + ", errors: " + errors + ", warnings: " + warnings);
+  lines.push("Total rate: " + moneyStr(totalRate) + ", double-booked loads: " + doubleBooked + ", unassigned loads: " + unassigned + ", past pickups: " + pastPickups);
+  lines.push("");
+  lines.push("Per-driver day plan:");
+  lines.push(padRight("driver", 16) + " " + padLeft("loads", 6) + " " + padLeft("first pickup", 17) + " " + padLeft("last delivery", 17) + " " + padLeft("total rate", 12));
+  Object.keys(perDriver).sort().forEach(function (key) {
+    var rowD = perDriver[key];
+    var first = rowD.firstPickup !== null ? fmtDateTime(rowD.firstPickup) : "-";
+    var last = rowD.lastDelivery !== null ? fmtDateTime(rowD.lastDelivery) : "-";
+    lines.push(padRight(rowD.driver, 16) + " " + padLeft(rowD.loads, 6) + " " + padLeft(first, 17) + " " + padLeft(last, 17) + " " + padLeft(moneyStr(rowD.totalRate), 12));
+  });
+  if (findings.length === 0) { lines.push(""); lines.push("All loads clean."); }
+  return lines.join("\n") + "\n";
+};
+</script>
+<script>
+var SAMPLE = "load_id,driver,truck,broker,pickup_at,delivery_at,origin,destination,rate,status,home_time_start,home_time_end,reset_until\nS-101,Alice Reed,T-101,Acme Logistics,2026-11-18 08:00,2026-11-18 18:00,Dallas TX,Houston TX,1200.00,booked,,,\nS-102,Alice Reed,T-101,Acme Logistics,2026-11-18 16:00,2026-11-19 02:00,Houston TX,Austin TX,900.00,booked,,,\nS-103,Bob Chen,T-102,Beta Freight,2026-11-18 09:00,2026-11-18 20:00,Atlanta GA,Charlotte NC,1100.00,booked,,,\nS-104,,T-103,Gamma Transport,2026-11-19 08:00,2026-11-19 17:00,Chicago IL,Milwaukee WI,850.00,booked,,,\nS-105,Carla Diaz,T-103,Delta Carriers,2026-11-10 08:00,2026-11-10 16:00,Nashville TN,Memphis TN,950.00,booked,,,\nS-106,Dan Okafor,T-104,Echo Freight,2026-11-19 14:00,2026-11-19 08:00,Phoenix AZ,Tucson AZ,700.00,booked,,,\nS-107,Erin Moss,T-105,Foxtrot Lines,2026-11-19 08:00,2026-11-19 18:00,Denver CO,Kansas City MO,1300.00,booked,2026-11-19 12:00,2026-11-20 08:00,\nS-108,Bob Chen,T-102,Beta Freight,2026-11-18 21:00,2026-11-19 05:00,Charlotte NC,Raleigh NC,600.00,booked,,,\nS-109,Carla Diaz,T-103,Delta Carriers,2026-11-19 08:00,2026-11-19 15:00,Memphis TN,Little Rock AR,800.00,booked,,,\nS-110,Dan Okafor,T-104,Echo Freight,2026-11-20 08:00,2026-11-20 16:00,Tucson AZ,El Paso TX,1050.00,booked,,,2026-11-20 12:00\nS-111,Frank Hale,T-106,Golf Logistics,2026-11-19 07:00,2026-11-19 14:00,Seattle WA,Portland OR,750.00,booked,,,\nS-112,Frank Hale,T-106,Golf Logistics,2026-11-19 14:30,2026-11-19 22:00,Portland OR,Salem OR,500.00,booked,,,\nS-113,Alice Reed,T-101,Acme Logistics,2026-11-20 08:00,2026-11-20 17:00,Austin TX,San Antonio TX,650.00,booked,,,\nS-114,Bob Chen,T-102,Beta Freight,2026-11-20 09:00,2026-11-20 18:00,Raleigh NC,Greensboro NC,550.00,dispatched,,,\nS-115,Carla Diaz,T-103,Delta Carriers,2026-11-20 08:00,2026-11-20 12:00,Little Rock AR,Fayetteville AR,400.00,cancelled,,,\nS-116,Dan Okafor,T-104,Echo Freight,2026-11-20 18:00,2026-11-21 02:00,El Paso TX,Midland TX,900.00,booked,,,\nS-117,Erin Moss,T-105,Foxtrot Lines,2026-11-21 08:00,2026-11-21 16:00,Kansas City MO,Omaha NE,1000.00,booked,,,\nS-118,Frank Hale,T-106,Golf Logistics,2026-11-21 07:00,2026-11-21 15:00,Salem OR,Eugene OR,600.00,booked,,,\nS-119,Alice Reed,T-101,Acme Logistics,2026-11-21 09:00,2026-11-21 17:00,San Antonio TX,Laredo TX,abc,booked,,,\nS-120,Bob Chen,T-102,Beta Freight,2026-11-21 10:00,not-a-time,Greensboro NC,Winston-Salem NC,450.00,booked,,,\nS-101,Alice Reed,T-101,Acme Logistics,2026-11-22 08:00,2026-11-22 16:00,Austin TX,Dallas TX,700.00,booked,,,\nS-121,Bad Row,111111,2026-11-01,2026-11-02,100.00,30,2026-11-01,2026-10-28,paid,extra-field,another-field\nS-121,Carla Diaz,T-103,Delta Carriers,2026-11-22 08:00,2026-11-22 16:00,Fayetteville AR,Tulsa OK,700.00,booked,,,\nS-122,Dan Okafor,,Echo Freight,2026-11-22 08:00,2026-11-22 15:00,Midland TX,Lubbock TX,650.00,booked,,,\nS-123,Erin Moss,T-105,Foxtrot Lines,2026-11-22 09:00,2026-11-22 17:00,Omaha NE,Lincoln NE,550.00,holding,,,\nS-124,Grace Kim,T-101,Acme Logistics,2026-11-18 10:00,2026-11-18 15:00,Dallas TX,Fort Worth TX,500.00,booked,,,\n";
+var SAMPLE_CLEAN = "load_id,driver,truck,broker,pickup_at,delivery_at,origin,destination,rate,status,home_time_start,home_time_end,reset_until\nC-201,Alice Reed,T-101,Acme Logistics,2026-11-18 08:00,2026-11-18 18:00,Dallas TX,Houston TX,1200.00,booked,,,\nC-202,Bob Chen,T-102,Beta Freight,2026-11-18 09:00,2026-11-18 19:00,Atlanta GA,Charlotte NC,1100.00,booked,,,\nC-203,Carla Diaz,T-103,Delta Carriers,2026-11-19 08:00,2026-11-19 16:00,Nashville TN,Memphis TN,900.00,dispatched,,,\nC-204,Dan Okafor,T-104,Echo Freight,2026-11-19 08:00,2026-11-19 15:00,Phoenix AZ,Tucson AZ,800.00,booked,,,\n";
+var SAMPLE_WARNINGS = "load_id,driver,truck,broker,pickup_at,delivery_at,origin,destination,rate,status,home_time_start,home_time_end,reset_until\nW-301,Alice Reed,T-101,,2026-11-18 08:00,2026-11-18 18:00,Dallas TX,Houston TX,1200.00,booked,,,\nW-302,Bob Chen,,Beta Freight,2026-11-18 09:00,2026-11-18 19:00,Atlanta GA,Charlotte NC,1100.00,booked,,,\n";
+var inputEl = document.getElementById("input");
+var outEl = document.getElementById("out");
+var lastReport = "";
+document.getElementById("file").addEventListener("change", function (ev) {
+  var f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  var reader = new FileReader();
+  reader.onload = function () { inputEl.value = String(reader.result || ""); };
+  reader.readAsText(f);
+});
+document.getElementById("sample").addEventListener("click", function () { inputEl.value = SAMPLE; });
+document.getElementById("sample-clean").addEventListener("click", function () { inputEl.value = SAMPLE_CLEAN; });
+document.getElementById("sample-warnings").addEventListener("click", function () { inputEl.value = SAMPLE_WARNINGS; });
+document.getElementById("run").addEventListener("click", function () {
+  var options = { minGapHours: document.getElementById("opt-gap").value, pastGraceHours: document.getElementById("opt-grace").value, asOf: document.getElementById("opt-asof").value };
+  try {
+    lastReport = window.runTool(inputEl.value, options);
+    outEl.textContent = lastReport;
+  } catch (e) {
+    lastReport = "ERROR: " + e.message + "\n";
+    outEl.textContent = lastReport;
+  }
+});
+document.getElementById("download").addEventListener("click", function () {
+  var text = lastReport || outEl.textContent;
+  var blob = new Blob([text], { type: "text/plain" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "dispatch-schedule-report.txt";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
