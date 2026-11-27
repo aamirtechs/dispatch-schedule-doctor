@@ -699,6 +699,24 @@ class TestRender(unittest.TestCase):
         self.assertIn("All loads clean.", text)
         self.assertIn("Per-driver day plan:", text)
 
+    def test_collision_summary_tie_breaks_by_driver_name(self):
+        loads = [make_load(id="A1", driver="Zoe", truck="T1"),
+                 make_load(id="A2", driver="Zoe", truck="T2"),
+                 make_load(id="B1", driver="Alice", truck="T3"),
+                 make_load(id="B2", driver="Alice", truck="T4")]
+        findings = dsd.audit(loads, AS_OF)
+        text = dsd.render_text(loads, findings,
+                               dsd.summarize(loads, findings))
+        self.assertIn("Most double-booked driver: Alice (1 load)", text)
+
+    def test_collision_summary_ignores_unassigned_driver(self):
+        loads = [make_load(id="A1", driver="", truck="T1"),
+                 make_load(id="A2", driver="", truck="T1")]
+        findings = dsd.audit(loads, AS_OF)
+        text = dsd.render_text(loads, findings,
+                               dsd.summarize(loads, findings))
+        self.assertNotIn("Most double-booked driver:", text)
+
     def test_json_money_is_string(self):
         summary = dsd.summarize([make_load()], [])
         parsed = json.loads(
@@ -740,6 +758,21 @@ class TestCli(unittest.TestCase):
         self.assertIn("double-booked loads: 4", out)
         self.assertIn("unassigned loads: 1", out)
         self.assertIn("past pickups: 1", out)
+
+    def test_sample_most_double_booked_driver(self):
+        code, out, _ = run_cli(self.sample, "--as-of", "2026-11-18")
+        self.assertEqual(code, 0)
+        self.assertIn("Most double-booked driver: Alice Reed (2 loads)", out)
+
+    def test_clean_omits_most_double_booked_driver(self):
+        _, out, _ = run_cli(self.clean, "--as-of", "2026-11-18")
+        self.assertNotIn("Most double-booked driver:", out)
+
+    def test_json_has_no_most_double_booked_driver_field(self):
+        _, out, _ = run_cli(self.sample, "--as-of", "2026-11-18",
+                            "--json")
+        self.assertNotIn("most_double_booked_driver", json.loads(out))
+        self.assertNotIn("Most double-booked driver:", out)
 
     def test_sample_headline_cases(self):
         _, out, _ = run_cli(self.sample, "--as-of", "2026-11-18")
