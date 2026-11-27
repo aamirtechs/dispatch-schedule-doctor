@@ -81,11 +81,12 @@ TIMESTAMP_FORMATS = (
 class Finding:
     """One audit finding for one load, or for one driver."""
 
-    def __init__(self, load, rule, severity, message):
+    def __init__(self, load, rule, severity, message, driver=None):
         self.load = load
         self.rule = rule
         self.severity = severity
         self.message = message
+        self.driver = driver
 
     def as_dict(self):
         """Return the finding as a plain dict."""
@@ -457,7 +458,8 @@ def check_double_booked(active):
                                fmt_time(earlier["pickup_at"]),
                                fmt_time(earlier["delivery_at"]),
                                fmt_time(load["pickup_at"]),
-                               fmt_time(load["delivery_at"]))))
+                               fmt_time(load["delivery_at"])),
+                            driver=load["driver"]))
                         break
     return findings
 
@@ -572,6 +574,18 @@ def render_text(loads, findings, summary):
                     summary["double_booked_loads"],
                     summary["unassigned_loads"],
                     summary["past_pickups"]))
+    # Count collision findings, not distinct load IDs, as in the
+    # headline double-booked total. Keep attribution on each finding
+    # so duplicate IDs do not accidentally credit a different driver.
+    collisions = {}
+    for item in findings:
+        if item.rule.startswith("double-booked") and item.driver:
+            collisions[item.driver] = collisions.get(item.driver, 0) + 1
+    if collisions:
+        driver = min(collisions, key=lambda name: (-collisions[name], name))
+        count = collisions[driver]
+        lines.append("Most double-booked driver: %s (%d %s)"
+                     % (driver, count, "load" if count == 1 else "loads"))
     lines.append("")
     lines.append("Per-driver day plan:")
     lines.append("%-16s %6s %17s %17s %12s"

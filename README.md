@@ -150,7 +150,10 @@ Warnings, patterns worth investigating:
 
 The summary reports the total rate with Decimal cents
 math, the counts of double-booked loads, unassigned
-loads, and past pickups, and a per-driver day plan table
+loads, and past pickups. If a named driver has collision
+findings, the text report also names the driver with the most
+findings (driver and truck collisions count separately; ties
+break by driver name). It includes a per-driver day plan table
 with load count, first pickup, last delivery, and total
 rate. Loads with no driver are grouped under
 `(unassigned)`.
@@ -184,6 +187,7 @@ ERROR [no-travel-gap] S-112: driver Frank Hale has only 0.5 hours between delive
 
 Loads: 25, findings: 17, errors: 15, warnings: 2
 Total rate: $18,350.00, double-booked loads: 4, unassigned loads: 1, past pickups: 1
+Most double-booked driver: Alice Reed (2 loads)
 
 Per-driver day plan:
 driver            loads      first pickup     last delivery   total rate
